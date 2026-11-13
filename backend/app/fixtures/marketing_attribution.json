@@ -1,0 +1,7 @@
+{
+  "watermark_ts": "2026-11-10T20:00:00Z",
+  "rows": [
+    {"channel": "search", "attributed_orders": 2, "revenue": 208.5},
+    {"channel": "direct", "attributed_orders": 1, "revenue": 15.0}
+  ]
+}
