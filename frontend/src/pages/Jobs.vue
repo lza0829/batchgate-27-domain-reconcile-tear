@@ -45,16 +45,17 @@ onMounted(async () => {
 <template>
   <div class="page">
     <h1>作业</h1>
-    <p class="muted">维护业务域与单次最大尝试次数。依赖只允许同域：把作业改到会让上下游跨域的域时，保存会被拒绝并列出冲突边。</p>
+    <p class="muted">维护业务域与单次最大尝试次数。依赖只允许同域：把作业改到会让上下游跨域的域时，保存会被拒绝并列出冲突边，不会落库。</p>
     <p v-if="err" class="tag danger">{{ err }}</p>
     <p v-if="msg" class="tag ok">{{ msg }}</p>
     <div class="panel" v-if="crossEdges.length">
-      <h3>现存跨域依赖（编排时会被拦截）</h3>
+      <h3>现存跨域依赖（脏边可查，编排一律拦截、不可执行）</h3>
       <ul>
         <li v-for="(e, i) in crossEdges" :key="i" class="mono">
           {{ e.job }}（{{ e.job_domain }}）→ {{ e.depends_on }}（{{ e.dep_domain }}）
         </li>
       </ul>
+      <p class="muted">这些边来自历史配置，保存新变更时同样按跨域禁则校验；执行器不会让其成功或抬水位。</p>
     </div>
     <div class="panel">
       <table>

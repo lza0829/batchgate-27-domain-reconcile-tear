@@ -52,7 +52,8 @@ def patch_domain(job_id: int, body: DomainBody):
 
     Moving a job into another domain is refused with 409 when it would create
     a cross-domain dependency edge, either from the job itself or from a
-    downstream job that depends on it.
+    downstream job that depends on it.  The same prohibition the orchestration
+    applies to readiness is used here; nothing is written on a conflict.
     """
     conn = connect()
     try:
@@ -64,15 +65,18 @@ def patch_domain(job_id: int, body: DomainBody):
 
         jobs = jobs_repo.list_jobs(conn)
         conflicts = cross_domain_conflicts_for_change(jobs, job_id, body.domain)
+        if conflicts:
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "cross_domain_dependency",
+                    "message": "域变更会形成跨域依赖，已拒绝保存",
+                    "conflicts": conflicts,
+                },
+            )
+
         jobs_repo.update_domain(conn, job_id, body.domain)
         conn.commit()
-        updated = jobs_repo.get_job(conn, job_id)
-        if conflicts and updated is not None:
-            updated = {
-                **updated,
-                "cross_domain_conflicts": conflicts,
-                "saved_with_conflicts": True,
-            }
-        return updated
+        return jobs_repo.get_job(conn, job_id)
     finally:
         conn.close()

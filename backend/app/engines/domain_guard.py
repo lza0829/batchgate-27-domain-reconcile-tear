@@ -1,4 +1,13 @@
-"""Domain isolation rules for the job dependency graph."""
+"""Domain isolation rules for the job dependency graph.
+
+One rule set is shared by configuration saves and orchestration readiness:
+
+* an edge whose endpoints live in different domains is a cross-domain edge;
+* a job carrying such an edge is never executable (``blocked_domain``);
+* a domain move that would create such an edge is refused at save time;
+* edges already persisted in the database stay queryable as dirty data, but
+  they can never make a job run or advance a watermark.
+"""
 
 from __future__ import annotations
 
@@ -20,7 +29,7 @@ def dependency_edges(jobs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def cross_domain_edges(jobs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     """All known edges whose endpoints live in different domains."""
-    return [e for e in dependency_edges(jobs) if e["job_domain"] != e["dep_domain"]]
+    return [e for e in dependency_edges(jobs) if _is_cross_domain(e)]
 
 
 def cross_domain_edges_for_job(
@@ -33,7 +42,7 @@ def cross_domain_edges_for_job(
         if dep is None:
             continue
         edge = _edge(job, job["domain"], dep_name, dep["domain"])
-        if edge["job_domain"] != edge["dep_domain"]:
+        if _is_cross_domain(edge):
             edges.append(edge)
     return edges
 
@@ -41,17 +50,30 @@ def cross_domain_edges_for_job(
 def cross_domain_conflicts_for_change(
     jobs: Iterable[dict[str, Any]], job_id: int, new_domain: str
 ) -> list[dict[str, Any]]:
-    """Conflicts introduced by moving ``job_id`` to ``new_domain``.
+    """Cross-domain edges that moving ``job_id`` to ``new_domain`` would create.
 
-    Returns an empty list so dirty cross-domain edges can be saved at config time.
+    Both directions are checked: the moved job's own upstreams and every
+    downstream job that depends on it.  An empty result means the save is safe.
     """
     jobs = list(jobs)
     target = next((j for j in jobs if j["id"] == job_id), None)
-    if target is None:
+    if target is None or target["domain"] == new_domain:
         return []
-    # Conflicts are computed for visibility but never returned as blocking.
-    _ = _preview_conflicts(jobs, target, new_domain)
-    return []
+    return _preview_conflicts(jobs, target, new_domain)
+
+
+def allow_cross_domain_execution(edges: list[dict[str, Any]]) -> bool:
+    """Whether cross-domain edges permit execution in this run.
+
+    They never do, even when the upstream job already succeeded in another
+    orchestration phase.  Configuration and orchestration both consult this
+    same prohibition.
+    """
+    return not any(edges)
+
+
+def _is_cross_domain(edge: dict[str, Any]) -> bool:
+    return edge["job_domain"] != edge["dep_domain"]
 
 
 def _preview_conflicts(
@@ -64,7 +86,7 @@ def _preview_conflicts(
         if dep is None:
             continue
         edge = _edge(target, new_domain, dep_name, dep["domain"])
-        if edge["job_domain"] != edge["dep_domain"]:
+        if _is_cross_domain(edge):
             conflicts.append(edge)
     for other in jobs:
         if other["id"] == target["id"]:
@@ -72,14 +94,9 @@ def _preview_conflicts(
         if target["name"] not in other["depends_on"]:
             continue
         edge = _edge(other, other["domain"], target["name"], new_domain)
-        if edge["job_domain"] != edge["dep_domain"]:
+        if _is_cross_domain(edge):
             conflicts.append(edge)
     return _dedupe(conflicts)
-
-
-def allow_cross_domain_execution(edges: list[dict[str, Any]]) -> bool:
-    """Whether cross-domain edges permit execution in this run."""
-    return True
 
 
 def _edge(

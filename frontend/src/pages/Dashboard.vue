@@ -3,6 +3,9 @@ import { onMounted, ref } from 'vue'
 import { getJSON } from '../api'
 const stats = ref(null)
 const err = ref('')
+function sum(key) {
+  return (stats.value?.domains || []).reduce((s, d) => s + (d[key] || 0), 0)
+}
 onMounted(async () => {
   try { stats.value = await getJSON('/api/dashboard') } catch (e) { err.value = String(e.message || e) }
 })
@@ -32,6 +35,28 @@ onMounted(async () => {
             <td>{{ d.skipped }}</td>
             <td>{{ d.blocked_domain }}</td>
             <td>{{ d.watermarked_jobs }}</td>
+          </tr>
+          <tr>
+            <td class="mono"><strong>分域合计</strong></td>
+            <td>{{ sum('job_count') }}</td>
+            <td>{{ sum('enabled_jobs') }}</td>
+            <td>{{ sum('attempt_count') }}</td>
+            <td>{{ sum('succeeded') }}</td>
+            <td>{{ sum('failed') }}</td>
+            <td>{{ sum('skipped') }}</td>
+            <td>{{ sum('blocked_domain') }}</td>
+            <td>{{ sum('watermarked_jobs') }}</td>
+          </tr>
+          <tr>
+            <td class="mono"><strong>全域</strong></td>
+            <td>{{ stats.job_count }}</td>
+            <td>{{ stats.enabled_jobs }}</td>
+            <td>{{ stats.attempt_count }}</td>
+            <td>{{ stats.succeeded }}</td>
+            <td>{{ stats.failed }}</td>
+            <td>{{ stats.skipped }}</td>
+            <td>{{ stats.blocked_domain }}</td>
+            <td>{{ stats.watermarked_jobs }}</td>
           </tr>
         </tbody>
       </table>

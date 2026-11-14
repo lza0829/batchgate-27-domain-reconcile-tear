@@ -97,6 +97,117 @@ def test_cross_domain_dependency_is_blocked(client: TestClient):
     assert by_job["fact_order_daily"]["status"] == "success"
 
 
+def test_blocked_job_writes_no_watermark_and_leaves_one_attempt(client: TestClient):
+    """A cross-domain job attempts once, never succeeds, never raises a watermark."""
+    run = client.post("/api/orchestrations").json()
+
+    attempts = client.get(f"/api/attempts?orchestration_id={run['id']}").json()
+    marketing = [a for a in attempts if a["job_name"] == "marketing_attribution"]
+    assert len(marketing) == 1
+    assert marketing[0]["status"] == "blocked_domain"
+    assert marketing[0]["attempt_no"] == 1
+
+    watermarks = {w["job_name"]: w for w in client.get("/api/watermarks").json()}
+    assert watermarks["marketing_attribution"]["watermark_ts"] is None
+    assert watermarks["ingest_orders"]["watermark_ts"] is not None
+
+    report = run["report"]
+    assert report["watermarked_jobs"] == report["succeeded"] == 3
+    assert report["blocked_domain"] == 1
+    assert report["attempt_count"] == len(attempts) == report["job_total"]
+
+
+def test_report_slice_sums_equal_published_global_totals(client: TestClient):
+    report = client.post("/api/orchestrations").json()["report"]
+    keys = (
+        "succeeded",
+        "failed",
+        "skipped",
+        "skipped_dep",
+        "blocked_domain",
+        "job_total",
+        "attempt_count",
+        "watermarked_jobs",
+    )
+    for key in keys:
+        assert report["domain_totals"][key] == report[key], key
+        assert sum(d[key] for d in report["domains"]) == report[key], key
+    assert report["domain_consistent"] is True
+
+
+def test_persisted_cross_domain_edge_is_visible_and_unexecutable(client: TestClient):
+    """A dirty edge written straight to the database stays queryable but never runs."""
+    conn = connect()
+    conn.execute(
+        "UPDATE jobs SET depends_on_json=? WHERE name='customer_profile'",
+        ('["ingest_orders"]',),
+    )
+    conn.execute(
+        "UPDATE jobs SET domain='crm' WHERE name='customer_profile'"
+    )
+    conn.commit()
+    conn.close()
+
+    edges = client.get("/api/domains").json()["cross_domain_edges"]
+    assert {
+        "job": "customer_profile",
+        "job_domain": "crm",
+        "depends_on": "ingest_orders",
+        "dep_domain": "sales",
+    } in edges
+
+    run = client.post("/api/orchestrations").json()
+    attempts = {
+        a["job_name"]: a
+        for a in client.get(f"/api/attempts?orchestration_id={run['id']}").json()
+    }
+    assert attempts["customer_profile"]["status"] == "blocked_domain"
+    assert attempts["customer_profile"]["detail"]["blocked_edges"] == [
+        {
+            "job": "customer_profile",
+            "job_domain": "crm",
+            "depends_on": "ingest_orders",
+            "dep_domain": "sales",
+        }
+    ]
+    assert not any(
+        a["job_name"] == "customer_profile" and a["status"] == "success"
+        for a in client.get("/api/attempts").json()
+    )
+    assert run["report"]["domain_consistent"] is True
+
+
+def test_dirty_edge_blocks_save_until_repaired(client: TestClient):
+    """The same prohibition is used at save time: repair is allowed, drift is not."""
+    jobs = _jobs(client)
+    conn = connect()
+    conn.execute(
+        "UPDATE jobs SET depends_on_json=? WHERE name='customer_profile'",
+        ('["ingest_orders"]',),
+    )
+    conn.execute("UPDATE jobs SET domain='crm' WHERE name='customer_profile'")
+    conn.commit()
+    conn.close()
+
+    # Moving further away keeps the edge crossing -> refused, nothing written.
+    resp = client.patch(
+        f"/api/jobs/{jobs['customer_profile']['id']}/domain",
+        json={"domain": "finance"},
+    )
+    assert resp.status_code == 409
+    assert _jobs(client)["customer_profile"]["domain"] == "crm"
+
+    # Moving into the upstream's domain repairs the edge -> allowed.
+    resp = client.patch(
+        f"/api/jobs/{jobs['customer_profile']['id']}/domain",
+        json={"domain": "sales"},
+    )
+    assert resp.status_code == 200
+    assert _jobs(client)["customer_profile"]["domain"] == "sales"
+    remaining = client.get("/api/domains").json()["cross_domain_edges"]
+    assert [e["job"] for e in remaining] == ["marketing_attribution"]
+
+
 def test_per_domain_sums_equal_global(client: TestClient):
     run = client.post("/api/orchestrations").json()
     report = run["report"]
